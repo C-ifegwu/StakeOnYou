@@ -1,0 +1,16 @@
+"escrow_status_title" = "Escrow Status";
+"payout_preview_title" = "Payout Preview";
+"transactions_title" = "Transactions";
+"file_dispute" = "File Dispute";
+"confirm_distribute" = "Confirm Distribute";
+"principal" = "Principal";
+"accrued" = "Accrued";
+"estimated_fees" = "Estimated Fees";
+"charity_share" = "Charity Share";
+"app_share" = "App Share";
+"winners_share" = "Winners Share";
+"estimated_net" = "Estimated Net";
+"something_went_wrong" = "Something went wrong";
+"retry" = "Retry";
+
+
