@@ -1,3 +1,181 @@
+name: iOS CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_PATH: StakeOnYou.xcodeproj
+  SCHEME: StakeOnYou
+  SIM_DEVICE: iPhone 15
+  SIM_OS: 16.4
+  CONFIG: Debug
+
+jobs:
+  build-test-archive:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode (fallback to 15.4 if present)
+        run: |
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s "/Applications/Xcode_15.4.app/Contents/Developer"
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Set up Ruby (for fastlane if used later)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData
+            ~/.swiftpm
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Install CocoaPods if Podfile exists
+        if: ${{ hashFiles('**/Podfile') != '' }}
+        run: |
+          sudo gem install cocoapods --no-document
+          pod repo update
+          pod install --project-directory=.
+
+      - name: Resolve Swift Packages
+        run: |
+          xcodebuild -resolvePackageDependencies -project "$PROJECT_PATH"
+
+      - name: List schemes
+        run: xcodebuild -list -project "$PROJECT_PATH" | cat
+
+      - name: Boot simulator
+        run: |
+          xcrun simctl list devices | cat
+          xcrun simctl bootstatus "${SIM_DEVICE} (${SIM_OS})" || true
+
+      - name: Build (Simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=${SIM_DEVICE},OS=${SIM_OS}" \
+            -configuration "$CONFIG" \
+            build | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Test (Simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=${SIM_DEVICE},OS=${SIM_OS}" \
+            -configuration "$CONFIG" \
+            test | xcpretty
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Prepare signing material (conditional)
+        id: signing
+        shell: bash
+        run: |
+          set -e
+          if [ -n "${{ secrets.IOS_CERT_P12 }}" ] && [ -n "${{ secrets.IOS_CERT_PASSWORD }}" ] && [ -n "${{ secrets.IOS_MOBILEPROVISION }}" ]; then
+            echo "has_signing=true" >> $GITHUB_OUTPUT
+            CERT_PATH="$RUNNER_TEMP/cert.p12"
+            MOBILEPROV_PATH="$RUNNER_TEMP/profile.mobileprovision"
+            echo "${{ secrets.IOS_CERT_P12 }}" | base64 --decode > "$CERT_PATH"
+            echo "${{ secrets.IOS_MOBILEPROVISION }}" | base64 --decode > "$MOBILEPROV_PATH"
+            KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+            KEYCHAIN_PWD="buildpass"
+            security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "${{ secrets.IOS_CERT_PASSWORD }}" -T /usr/bin/codesign
+            security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | sed 's/\"//g')
+            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+            UUID=$(grep -a -o '[-A-F0-9]\{36\}' "$MOBILEPROV_PATH" | head -1)
+            cp "$MOBILEPROV_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          else
+            echo "has_signing=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Archive (generic iOS device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            archive \
+            -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+
+      - name: Export IPA (conditional on signing)
+        if: steps.signing.outputs.has_signing == 'true'
+        run: |
+          cat > $RUNNER_TEMP/ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>thinning</key><string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          PLIST
+          set -o pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" | xcpretty
+          ls -R "$RUNNER_TEMP/export" | cat
+
+      - name: Upload IPA artifact (conditional)
+        if: steps.signing.outputs.has_signing == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: StakeOnYou-ipa
+          path: ${{ runner.temp }}/export/*.ipa
+
+      - name: Upload xcarchive artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: StakeOnYou-archive
+          path: ${{ runner.temp }}/StakeOnYou.xcarchive
+
+      - name: Install fastlane (conditional for TestFlight)
+        if: ${{ secrets.APPLE_ID != '' && secrets.FASTLANE_PASSWORD != '' && secrets.TEAM_ID != '' }}
+        run: |
+          gem install fastlane --no-document
+          fastlane --version
+
+      - name: TestFlight upload (conditional)
+        if: ${{ secrets.APPLE_ID != '' && secrets.FASTLANE_PASSWORD != '' && secrets.TEAM_ID != '' && steps.signing.outputs.has_signing == 'true' }}
+        env:
+          FASTLANE_USER: ${{ secrets.APPLE_ID }}
+          FASTLANE_PASSWORD: ${{ secrets.FASTLANE_PASSWORD }}
+          APPLE_APPLICATION_SPECIFIC_PASSWORD: ${{ secrets.FASTLANE_PASSWORD }}
+          FASTLANE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          IPA_PATH=$(ls "$RUNNER_TEMP/export"/*.ipa | head -1)
+          fastlane pilot upload --ipa "$IPA_PATH" --skip_waiting_for_build_processing true
 name: iOS CI
 
 on:

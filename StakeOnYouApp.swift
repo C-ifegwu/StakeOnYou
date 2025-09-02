@@ -38,7 +38,7 @@ class AppEnvironment: ObservableObject {
         }
         
         container.register(GoalRepository.self) { _ in
-            GoalRepositoryImpl()
+            CoreDataGoalRepository()
         }
         
         container.register(StakeRepository.self) { _ in

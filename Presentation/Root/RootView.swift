@@ -519,12 +519,10 @@ class HomeViewModel: ObservableObject {
 struct GoalsView: View {
     var body: some View {
         NavigationView {
-            VStack {
-                Text("Goals View")
-                    .font(AppTypography.headlineLarge())
-                Text("Coming soon...")
-                    .font(AppTypography.bodyLarge())
-                    .foregroundColor(.appTextSecondary)
+            List {
+                NavigationLink(destination: CreateGoalView(viewModel: CreateGoalViewModel())) {
+                    Label("Create Goal", systemImage: "plus.circle.fill")
+                }
             }
             .navigationTitle("Goals")
         }
