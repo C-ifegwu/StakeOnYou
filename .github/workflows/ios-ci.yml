@@ -67,9 +67,36 @@ jobs:
         run: |
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild -list -workspace "$WORKSPACE_PATH" | cat
+            xcrun xcodebuild -json -list -workspace "$WORKSPACE_PATH" > $RUNNER_TEMP/schemes.json || true
           else
             xcodebuild -list -project "$PROJECT_PATH" | cat
+            xcrun xcodebuild -json -list -project "$PROJECT_PATH" > $RUNNER_TEMP/schemes.json || true
           fi
+          cat $RUNNER_TEMP/schemes.json || true
+
+      - name: Auto-detect scheme if not present
+        id: autodetect
+        shell: bash
+        run: |
+          DETECTED=$(python3 - <<'PY'
+import json, os
+p = os.environ.get('RUNNER_TEMP')
+f = os.path.join(p, 'schemes.json')
+try:
+  data = json.load(open(f))
+  schemes = []
+  for target in data.get('project', {}).get('schemes', []): schemes.append(target)
+  for target in data.get('workspace', {}).get('schemes', []): schemes.append(target)
+  if schemes:
+    print(schemes[0])
+except Exception as e:
+  pass
+PY
+)
+          if [ -n "$DETECTED" ]; then echo "scheme=$DETECTED" >> $GITHUB_OUTPUT; else echo "scheme=$SCHEME" >> $GITHUB_OUTPUT; fi
+
+      - name: Show selected scheme
+        run: echo "Using scheme: ${{ steps.autodetect.outputs.scheme }}"
 
       - name: Boot simulator (best-effort)
         run: |
@@ -82,14 +109,14 @@ jobs:
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild \
               -workspace "$WORKSPACE_PATH" \
-              -scheme "$SCHEME" \
+              -scheme "${{ steps.autodetect.outputs.scheme }}" \
               -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               build | xcpretty
           else
             xcodebuild \
               -project "$PROJECT_PATH" \
-              -scheme "$SCHEME" \
+              -scheme "${{ steps.autodetect.outputs.scheme }}" \
               -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               build | xcpretty
@@ -103,14 +130,24 @@ jobs:
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild \
               -workspace "$WORKSPACE_PATH" \
-              -scheme "$SCHEME" \
+              -scheme "${{ steps.autodetect.outputs.scheme }}" \
               -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               test | xcpretty
           else
             xcodebuild \
               -project "$PROJECT_PATH" \
-              -scheme "$SCHEME" \
+              -scheme "${{ steps.autodetect.outputs.scheme }}" \
+
+      - name: Upload build/test logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-logs
+          path: |
+            ~/Library/Logs/scan
+            ~/Library/Developer/Xcode/DerivedData/**/Logs/Build
+            ~/Library/Developer/Xcode/DerivedData/**/Logs/Test
               -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               test | xcpretty
