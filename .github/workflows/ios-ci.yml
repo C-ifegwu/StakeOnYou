@@ -8,9 +8,9 @@ on:
 
 env:
   PROJECT_PATH: StakeOnYou.xcodeproj
+  WORKSPACE_PATH: StakeOnYou.xcworkspace
   SCHEME: StakeOnYou
   SIM_DEVICE: iPhone 15
-  SIM_OS: 16.4
   CONFIG: Debug
 
 jobs:
@@ -34,6 +34,10 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
 
+      - name: Install xcpretty
+        run: |
+          gem install xcpretty --no-document
+
       - name: Cache SPM
         uses: actions/cache@v4
         with:
@@ -53,37 +57,64 @@ jobs:
 
       - name: Resolve Swift Packages
         run: |
-          xcodebuild -resolvePackageDependencies -project "$PROJECT_PATH"
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild -resolvePackageDependencies -workspace "$WORKSPACE_PATH"
+          else
+            xcodebuild -resolvePackageDependencies -project "$PROJECT_PATH"
+          fi
 
       - name: List schemes
-        run: xcodebuild -list -project "$PROJECT_PATH" | cat
+        run: |
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild -list -workspace "$WORKSPACE_PATH" | cat
+          else
+            xcodebuild -list -project "$PROJECT_PATH" | cat
+          fi
 
-      - name: Boot simulator
+      - name: Boot simulator (best-effort)
         run: |
           xcrun simctl list devices | cat
-          xcrun simctl bootstatus "${SIM_DEVICE} (${SIM_OS})" || true
+          xcrun simctl boot "${SIM_DEVICE}" || true
 
       - name: Build (Simulator)
         run: |
           set -o pipefail
-          xcodebuild \
-            -project "$PROJECT_PATH" \
-            -scheme "$SCHEME" \
-            -destination "platform=iOS Simulator,name=${SIM_DEVICE},OS=${SIM_OS}" \
-            -configuration "$CONFIG" \
-            build | xcpretty
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              build | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              build | xcpretty
+          fi
         env:
           NSUnbufferedIO: "YES"
 
       - name: Test (Simulator)
         run: |
           set -o pipefail
-          xcodebuild \
-            -project "$PROJECT_PATH" \
-            -scheme "$SCHEME" \
-            -destination "platform=iOS Simulator,name=${SIM_DEVICE},OS=${SIM_OS}" \
-            -configuration "$CONFIG" \
-            test | xcpretty
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              test | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              test | xcpretty
+          fi
         env:
           NSUnbufferedIO: "YES"
 
@@ -115,13 +146,23 @@ jobs:
       - name: Archive (generic iOS device)
         run: |
           set -o pipefail
-          xcodebuild \
-            -project "$PROJECT_PATH" \
-            -scheme "$SCHEME" \
-            -configuration Release \
-            -sdk iphoneos \
-            archive \
-            -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              archive \
+              -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              archive \
+              -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+          fi
 
       - name: Export IPA (conditional on signing)
         if: steps.signing.outputs.has_signing == 'true'
