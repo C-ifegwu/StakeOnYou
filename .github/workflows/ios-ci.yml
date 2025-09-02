@@ -1,4 +1,4 @@
-name: iOS CI/CD
+name: iOS CI (Simulator + Archive)
 
 on:
   push:
@@ -6,42 +6,34 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: read
-
 env:
   PROJECT_PATH: StakeOnYou.xcodeproj
   WORKSPACE_PATH: StakeOnYou.xcworkspace
-  DEFAULT_SCHEME: StakeOnYou
-  CONFIG: Debug
+  SCHEME: StakeOnYou
   SIM_DEVICE: "iPhone 15"
+  CONFIG: Debug
 
 jobs:
   build-test-archive:
     runs-on: macos-14
 
     steps:
+      # 1️⃣ Checkout repository
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2️⃣ Select Xcode version
       - name: Select Xcode 15.4
-        run: |
-          sudo xcode-select -s "/Applications/Xcode_15.4.app/Contents/Developer"
-          xcodebuild -version
+        run: sudo xcode-select -s "/Applications/Xcode_15.4.app/Contents/Developer"
 
-      - name: Set up Ruby + xcpretty
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # 3️⃣ Install xcpretty for readable logs
+      - name: Install xcpretty
         run: gem install xcpretty --no-document
 
-      - name: Install CocoaPods if Podfile exists
-        if: ${{ hashFiles('**/Podfile') != '' }}
-        run: |
-          sudo gem install cocoapods --no-document
-          pod repo update
-          pod install --project-directory=.
-
+      # 4️⃣ Resolve Swift Packages
       - name: Resolve Swift Packages
         run: |
           if [ -f "$WORKSPACE_PATH" ]; then
@@ -50,76 +42,53 @@ jobs:
             xcodebuild -resolvePackageDependencies -project "$PROJECT_PATH"
           fi
 
+      # 5️⃣ Build on Simulator
       - name: Build (Simulator)
         run: |
-          DEST="platform=iOS Simulator,name=${SIM_DEVICE}"
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild \
               -workspace "$WORKSPACE_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
-              -destination "$DEST" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               build | xcpretty
           else
             xcodebuild \
               -project "$PROJECT_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
-              -destination "$DEST" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               build | xcpretty
         env:
           NSUnbufferedIO: "YES"
 
+      # 6️⃣ Run tests on Simulator
       - name: Test (Simulator)
         run: |
-          DEST="platform=iOS Simulator,name=${SIM_DEVICE}"
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild \
               -workspace "$WORKSPACE_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
-              -destination "$DEST" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               test | xcpretty
           else
             xcodebuild \
               -project "$PROJECT_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
-              -destination "$DEST" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
               -configuration "$CONFIG" \
               test | xcpretty
         env:
           NSUnbufferedIO: "YES"
 
-      - name: Prepare signing material (conditional)
-        id: signing
-        shell: bash
-        run: |
-          set -e
-          if [ -n "${{ secrets.IOS_CERT_P12 }}" ] && [ -n "${{ secrets.IOS_CERT_PASSWORD }}" ] && [ -n "${{ secrets.IOS_MOBILEPROVISION }}" ]; then
-            echo "has_signing=true" >> $GITHUB_OUTPUT
-            CERT_PATH="$RUNNER_TEMP/cert.p12"
-            MOBILEPROV_PATH="$RUNNER_TEMP/profile.mobileprovision"
-            echo "${{ secrets.IOS_CERT_P12 }}" | base64 --decode > "$CERT_PATH"
-            echo "${{ secrets.IOS_MOBILEPROVISION }}" | base64 --decode > "$MOBILEPROV_PATH"
-            KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
-            KEYCHAIN_PWD="buildpass"
-            security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-            security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-            security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "${{ secrets.IOS_CERT_PASSWORD }}" -T /usr/bin/codesign
-            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-            UUID=$(grep -a -o '[-A-F0-9]\{36\}' "$MOBILEPROV_PATH" | head -1)
-            cp "$MOBILEPROV_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
-          else
-            echo "has_signing=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Archive (generic iOS device)
+      # 7️⃣ Archive for generic iOS device (unsigned)
+      - name: Archive (Generic iOS Device)
         run: |
           if [ -f "$WORKSPACE_PATH" ]; then
             xcodebuild \
               -workspace "$WORKSPACE_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
+              -scheme "$SCHEME" \
               -configuration Release \
               -sdk iphoneos \
               archive \
@@ -127,53 +96,15 @@ jobs:
           else
             xcodebuild \
               -project "$PROJECT_PATH" \
-              -scheme "$DEFAULT_SCHEME" \
+              -scheme "$SCHEME" \
               -configuration Release \
               -sdk iphoneos \
               archive \
               -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
 
-      - name: Export IPA (if signing is available)
-        if: steps.signing.outputs.has_signing == 'true'
-        run: |
-          cat > $RUNNER_TEMP/ExportOptions.plist <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>method</key><string>ad-hoc</string>
-            <key>signingStyle</key><string>manual</string>
-            <key>stripSwiftSymbols</key><true/>
-            <key>compileBitcode</key><false/>
-            <key>destination</key><string>export</string>
-            <key>thinning</key><string>&lt;none&gt;</string>
-          </dict>
-          </plist>
-          PLIST
-          xcodebuild -exportArchive \
-            -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" \
-            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$RUNNER_TEMP/export" | xcpretty
-          ls -R "$RUNNER_TEMP/export"
-
-      - name: Upload IPA artifact
-        if: steps.signing.outputs.has_signing == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: StakeOnYou-ipa
-          path: ${{ runner.temp }}/export/*.ipa
-
-      - name: Upload xcarchive artifact (always)
+      # 8️⃣ Upload archive artifact (always)
+      - name: Upload xcarchive artifact
         uses: actions/upload-artifact@v4
         with:
           name: StakeOnYou-archive
           path: ${{ runner.temp }}/StakeOnYou.xcarchive
-
-      - name: Upload logs (always)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xcode-logs
-          path: |
-            ~/Library/Developer/Xcode/DerivedData/**/Logs/Build
-            ~/Library/Developer/Xcode/DerivedData/**/Logs/Test
