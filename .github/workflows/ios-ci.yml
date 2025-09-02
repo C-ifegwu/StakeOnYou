@@ -1,0 +1,114 @@
+name: iOS CI (Build + Test + Archive)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_PATH: StakeOnYou.xcodeproj
+  WORKSPACE_PATH: StakeOnYou.xcworkspace
+  SCHEME: StakeOnYou
+  SIM_DEVICE: "iPhone 15"
+  CONFIG: Debug
+
+jobs:
+  build-test-archive:
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 15.4
+        run: sudo xcode-select -s "/Applications/Xcode_15.4.app/Contents/Developer"
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install xcpretty
+        run: gem install xcpretty --no-document
+
+      - name: Resolve Swift Packages
+        run: |
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild -resolvePackageDependencies -workspace "$WORKSPACE_PATH"
+          else
+            xcodebuild -resolvePackageDependencies -project "$PROJECT_PATH"
+          fi
+
+      - name: Build (Simulator)
+        run: |
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              build | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              build | xcpretty
+          fi
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Test (Simulator)
+        run: |
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              test | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -destination "platform=iOS Simulator,name=${SIM_DEVICE}" \
+              -configuration "$CONFIG" \
+              test | xcpretty
+          fi
+        env:
+          NSUnbufferedIO: "YES"
+
+      - name: Archive (Generic iOS Device, unsigned)
+        run: |
+          if [ -f "$WORKSPACE_PATH" ]; then
+            xcodebuild \
+              -workspace "$WORKSPACE_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              archive \
+              -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+          else
+            xcodebuild \
+              -project "$PROJECT_PATH" \
+              -scheme "$SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              archive \
+              -archivePath "$RUNNER_TEMP/StakeOnYou.xcarchive" | xcpretty
+          fi
+
+      - name: Upload xcarchive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StakeOnYou-archive
+          path: ${{ runner.temp }}/StakeOnYou.xcarchive
+
+      - name: Upload Xcode logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcode-logs
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/**/Logs/Build
+            ~/Library/Developer/Xcode/DerivedData/**/Logs/Test
+
